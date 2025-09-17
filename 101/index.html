@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Minimal WebRTC Chat (No Backend)</title>
+  <style>
+    :root{
+      --bg:#0f172a; /* slate-900 */
+      --panel:#111827; /* gray-900 */
+      --muted:#94a3b8; /* slate-400 */
+      --text:#e2e8f0; /* slate-200 */
+      --accent:#22d3ee; /* cyan-400 */
+      --accent2:#a78bfa; /* violet-400 */
+      --ok:#4ade80; /* green-400 */
+      --warn:#facc15; /* yellow-400 */
+      --err:#fb7185; /* rose-400 */
+    }
+    * { box-sizing: border-box; }
+    body{
+      margin:0; background: radial-gradient(1200px 800px at 20% -10%, #1f2937 10%, #0b1220 60%), var(--bg);
+      color:var(--text); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Noto Sans, sans-serif;
+      min-height:100vh; display:flex; flex-direction:column; align-items:center; gap:24px; padding:24px;
+    }
+    header{ max-width:980px; width:100%; }
+    h1{ margin:0; font-size:clamp(20px, 3vw, 28px);} 
+    p.lead{ color:var(--muted); margin:.25rem 0 0; }
+    main{ max-width:980px; width:100%; display:grid; grid-template-columns: 1.1fr .9fr; gap:20px; }
+    @media (max-width: 880px){ main{ grid-template-columns: 1fr; } }
+
+    .card{ background:linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,.01)); border:1px solid rgba(255,255,255,.06); border-radius:16px; padding:16px; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+    .row{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .col{ display:flex; flex-direction:column; gap:8px; }
+    label{ font-size:12px; color:var(--muted); }
+    input[type="text"], textarea{ width:100%; background:#0b1220; color:var(--text); border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:10px 12px; font:inherit; }
+    textarea{ min-height:140px; resize:vertical; }
+    button{ background:linear-gradient(90deg, var(--accent), var(--accent2)); color:#0b1220; font-weight:700; border:none; padding:10px 14px; border-radius:12px; cursor:pointer; transition: transform .04s ease, opacity .2s ease; }
+    button:hover{ opacity:.95 }
+    button:active{ transform: translateY(1px) }
+    button.secondary{ background:#0b1220; color:var(--text); border:1px solid rgba(255,255,255,.08); }
+    button.ghost{ background:transparent; color:var(--muted); border:1px dashed rgba(255,255,255,.18); }
+    button:disabled{ opacity:.5; cursor:not-allowed; }
+
+    .status{ display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+    .badge{ display:inline-flex; align-items:center; gap:8px; border:1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.02); padding:6px 10px; border-radius:999px; font-size:12px; }
+    .dot{ width:10px; height:10px; border-radius:999px; background:var(--muted); box-shadow:0 0 8px currentColor; }
+    .ok{ color:var(--ok) } .warn{ color:var(--warn) } .err{ color:var(--err) }
+
+    .log{ height:140px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; background:#060a13; border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:10px; }
+    .log .t{ color:#7dd3fc }
+    .log .k{ color:#fde68a }
+
+    .chat{
+      display:flex; flex-direction:column; gap:10px; height:460px;
+    }
+    .chat-log{ flex:1; border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:10px; overflow:auto; background:#060a13; }
+    .msg{ margin:6px 0; }
+    .msg .meta{ font-size:11px; color:var(--muted); }
+    .msg.you .bubble{ background:rgba(34,211,238,.12); border:1px solid rgba(34,211,238,.35); }
+    .msg.peer .bubble{ background:rgba(167,139,250,.12); border:1px solid rgba(167,139,250,.35); }
+    .bubble{ display:inline-block; padding:8px 10px; border-radius:10px; }
+
+    details.diag{ max-width:980px; width:100%; }
+    details.diag > summary{ cursor:pointer; color:var(--muted); }
+  </style>
+</head>
+<body>
+  <!--
+    Minimal WebRTC DataChannel chat page for static hosting (Vercel).
+    No signaling server; exchange SDP blobs manually (copy/paste).
+
+    How to use (two people on any network; TURN is not included so very restrictive NATs may fail):
+    1) Caller clicks "Create Offer" and sends the generated JSON (Local Description) to Callee.
+    2) Callee pastes that Offer JSON into "Remote Description (paste here)" and clicks
+       "Accept Offer → Create Answer". Callee sends back their generated JSON.
+    3) Caller pastes Callee's Answer JSON into "Remote Description" and clicks "Accept Answer".
+    When DataChannel opens, chat is ready.
+  -->
+  <header>
+    <h1>WebRTC Chat • Manual Signaling</h1>
+    <p class="lead">Public STUN only • Works on Vercel static hosting • Copy/paste offers & answers • No backend.</p>
+  </header>
+
+  <section class="card">
+    <div class="status">
+      <div class="badge" id="pcState"><span class="dot" id="pcDot"></span> PeerConnection: <strong id="pcVal">new</strong></div>
+      <div class="badge" id="iceState"><span class="dot" id="iceDot"></span> ICE: <strong id="iceVal">new</strong></div>
+      <div class="badge" id="dcState"><span class="dot" id="dcDot"></span> DataChannel: <strong id="dcVal">closed</strong></div>
+      <div class="badge"><span class="dot" style="background:var(--accent)"></span> Your name: <input id="name" type="text" value="You" style="margin-left:6px; width:120px"></div>
+    </div>
+  </section>
+
+  <main>
+    <!-- Left: Signaling (copy/paste) -->
+    <section class="card col">
+      <div class="row">
+        <button id="startOffer">Create Offer (Caller)</button>
+        <button id="acceptOffer" class="secondary">Accept Offer → Create Answer (Callee)</button>
+        <button id="acceptAnswer" class="secondary">Accept Answer (Caller)</button>
+        <button id="reset" class="ghost">Reset</button>
+        <button id="runTests" class="ghost">Run Diagnostics</button>
+      </div>
+      <div class="col">
+        <label for="localSDP">Local Description (send this JSON)</label>
+        <textarea id="localSDP" readonly placeholder="Click a button above to generate...\nThis will auto-fill once ICE gathering completes."></textarea>
+        <div class="row">
+          <button id="copyLocal">Copy</button>
+          <button id="downloadLocal" class="secondary">Download .json</button>
+        </div>
+      </div>
+      <div class="col">
+        <label for="remoteSDP">Remote Description (paste here)</label>
+        <textarea id="remoteSDP" placeholder="Paste the JSON you received from the other side and click the appropriate button."></textarea>
+      </div>
+      <div class="col">
+        <label>Logs</label>
+        <div id="log" class="log" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <!-- Right: Chat -->
+    <section class="card chat">
+      <div id="chatLog" class="chat-log" aria-live="polite"></div>
+      <div class="row">
+        <input id="chatInput" type="text" placeholder="Type a message…" disabled />
+        <button id="sendBtn" disabled>Send</button>
+      </div>
+    </section>
+  </main>
+
+  <details class="diag">
+    <summary>Diagnostics explained (what the built-in tests check)</summary>
+    <div class="card" style="margin-top:8px">
+      <ul>
+        <li><strong>STUN URL validity:</strong> constructs a temporary <code>RTCPeerConnection</code> with each configured STUN server and reports PASS/FAIL. (Fixed: removed <code>?transport=udp</code> from Twilio STUN.)</li>
+        <li><strong>escapeHtml correctness:</strong> verifies the chat escapes <code>&lt;</code>, <code>&gt;</code>, <code>&amp;</code>, <code>"</code>, and <code>'</code>.</li>
+        <li><strong>Badge updates:</strong> sanity-checks that status badges update their text and dot color.</li>
+      </ul>
+    </div>
+  </details>
+
+  <script>
+  // --- Utils ---
+  const $ = sel => document.querySelector(sel);
+  const logEl = $('#log');
+  function log(k, v){
+    const t = new Date().toLocaleTimeString();
+    const line = document.createElement('div');
+    line.innerHTML = `<span class="t">[${t}]</span> <span class="k">${k}</span> ${v ?? ''}`;
+    logEl.appendChild(line); logEl.scrollTop = logEl.scrollHeight;
+    console.log(`[LOG] ${k}`, v || '');
+  }
+  function setBadge(id, text, kind){
+    const val = document.getElementById(id+'Val');
+    const dot = document.getElementById(id+'Dot');
+    if(val) val.textContent = text;
+    if(dot){ dot.classList.remove('ok','warn','err');
+      if(kind) dot.classList.add(kind);
+      if(kind==='ok') dot.style.background='var(--ok)';
+      else if(kind==='warn') dot.style.background='var(--warn)';
+      else if(kind==='err') dot.style.background='var(--err)';
+      else dot.style.background='var(--muted)';
+    }
+  }
+  function download(filename, text) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], {type:'application/json'}));
+    a.download = filename; a.click(); URL.revokeObjectURL(a.href);
+  }
+  async function copy(text){
+    try{ await navigator.clipboard.writeText(text); return true; }catch(_){
+      // fallback
+      const ta = document.createElement('textarea'); ta.value=text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); return true;
+    }
+  }
+
+  // --- WebRTC setup ---
+  // FIX: remove invalid query string from STUN URL (Twilio). Correct format is host:port only.
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' }
+  ];
+
+  let pc = null;       // RTCPeerConnection
+  let dc = null;       // RTCDataChannel
+  let role = null;     // 'caller' | 'callee'
+
+  function newPC(){
+    if(pc){ try{ pc.close(); }catch(e){} }
+    pc = new RTCPeerConnection({ iceServers });
+
+    pc.addEventListener('connectionstatechange', () => {
+      const s = pc.connectionState;
+      const kind = s==='connected'?'ok': (s==='failed'?'err': (s==='disconnected'?'warn':undefined));
+      setBadge('pcState', s, kind);
+      log('pc.connectionState →', s);
+    });
+    pc.addEventListener('iceconnectionstatechange', () => {
+      const s = pc.iceConnectionState;
+      const kind = s==='connected' || s==='completed' ? 'ok' : (s==='failed'?'err': (s==='disconnected'?'warn':undefined));
+      setBadge('iceState', s, kind);
+      log('pc.iceConnectionState →', s);
+    });
+    pc.addEventListener('icegatheringstatechange', () => {
+      log('pc.iceGatheringState →', pc.iceGatheringState);
+      if(pc.iceGatheringState === 'complete') fillLocalSDP();
+    });
+
+    pc.addEventListener('datachannel', ev => {
+      log('ondatachannel', ev.channel?.label);
+      attachDC(ev.channel);
+    });
+
+    setBadge('pcState', 'new');
+    setBadge('iceState', 'new');
+    setBadge('dcState', 'closed');
+
+    $('#chatInput').disabled = true; $('#sendBtn').disabled = true;
+    return pc;
+  }
+
+  function attachDC(channel){
+    dc = channel;
+    dc.addEventListener('open', () => { setBadge('dcState', 'open', 'ok'); $('#chatInput').disabled=false; $('#sendBtn').disabled=false; log('datachannel', 'open'); });
+    dc.addEventListener('close', () => { setBadge('dcState', 'closed'); $('#chatInput').disabled=true; $('#sendBtn').disabled=true; log('datachannel', 'closed'); });
+    dc.addEventListener('message', (e) => addMsg('peer', e.data));
+  }
+
+  function waitIceComplete(){
+    if(pc.iceGatheringState === 'complete') return Promise.resolve();
+    return new Promise(res => pc.addEventListener('icegatheringstatechange', () => {
+      if(pc.iceGatheringState === 'complete') res();
+    }));
+  }
+
+  function fillLocalSDP(){
+    if(pc.localDescription){
+      const json = JSON.stringify(pc.localDescription);
+      $('#localSDP').value = json;
+    }
+  }
+
+  // --- Chat UI ---
+  function addMsg(who, text){
+    const name = who==='you' ? ($('#name').value || 'You') : 'Peer';
+    const t = new Date().toLocaleTimeString();
+    const wrap = document.createElement('div');
+    wrap.className = 'msg ' + (who==='you'?'you':'peer');
+    wrap.innerHTML = `<div class="meta">${name} • ${t}</div><div class="bubble">${escapeHtml(text)}</div>`;
+    const box = $('#chatLog'); box.appendChild(wrap); box.scrollTop = box.scrollHeight;
+  }
+  function escapeHtml(s){ return s.replace(/[&<>\"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[m])); }
+
+  // --- Button handlers ---
+  $('#startOffer').addEventListener('click', async () => {
+    role = 'caller';
+    newPC();
+    const channel = pc.createDataChannel('chat', {ordered:true});
+    attachDC(channel);
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    log('offer', 'created & setLocalDescription');
+    await waitIceComplete();
+    fillLocalSDP();
+  });
+
+  $('#acceptOffer').addEventListener('click', async () => {
+    role = 'callee';
+    if(!pc) newPC();
+    const text = $('#remoteSDP').value.trim();
+    if(!text){ return alert('Paste the Caller\'s Offer JSON first.'); }
+    let desc;
+    try{ desc = JSON.parse(text); }catch(e){ return alert('Invalid JSON in Remote Description.'); }
+    if(desc.type !== 'offer') return alert('Remote JSON must be an SDP offer.');
+
+    await pc.setRemoteDescription(desc);
+    log('setRemoteDescription', 'offer accepted');
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    log('answer', 'created & setLocalDescription');
+    await waitIceComplete();
+    fillLocalSDP();
+  });
+
+  $('#acceptAnswer').addEventListener('click', async () => {
+    const text = $('#remoteSDP').value.trim();
+    if(!text){ return alert('Paste the Callee\'s Answer JSON first.'); }
+    let desc;
+    try{ desc = JSON.parse(text); }catch(e){ return alert('Invalid JSON in Remote Description.'); }
+    if(desc.type !== 'answer') return alert('Remote JSON must be an SDP answer.');
+    await pc.setRemoteDescription(desc);
+    log('setRemoteDescription', 'answer accepted');
+  });
+
+  $('#reset').addEventListener('click', () => {
+    role=null; if(pc){ try{ pc.close(); }catch(e){} } pc=null; dc=null;
+    $('#localSDP').value=''; $('#remoteSDP').value=''; $('#chatLog').innerHTML=''; log('reset', '');
+    newPC();
+  });
+
+  $('#copyLocal').addEventListener('click', async ()=>{
+    const t = $('#localSDP').value.trim(); if(!t) return alert('Nothing to copy yet.');
+    await copy(t); log('clipboard', 'local description copied');
+  });
+  $('#downloadLocal').addEventListener('click', ()=>{
+    const t = $('#localSDP').value.trim(); if(!t) return alert('Nothing to download yet.');
+    download(`webrtc-${role||'pc'}-${Date.now()}.json`, t);
+  });
+
+  $('#sendBtn').addEventListener('click', () => {
+    const inp = $('#chatInput');
+    const msg = inp.value.trim(); if(!msg) return; if(!dc || dc.readyState!=='open') return alert('DataChannel not open yet.');
+    dc.send(msg); addMsg('you', msg); inp.value=''; inp.focus();
+  });
+  $('#chatInput').addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); $('#sendBtn').click(); }});
+
+  // --- Diagnostics / Test cases ---
+  // These are basic runtime checks intended to validate key behaviors.
+  async function runDiagnostics(){
+    log('diagnostics', 'starting…');
+    // Test 1: STUN URLs are acceptable by the browser
+    for (const srv of iceServers){
+      try {
+        const tmp = new RTCPeerConnection({ iceServers: [srv] });
+        tmp.close();
+        log('TEST: STUN URL', `${srv.urls} → PASS`);
+      } catch (e) {
+        log('TEST: STUN URL', `${srv.urls} → FAIL (${e?.message||e})`);
+      }
+    }
+
+    // Test 2: escapeHtml correctness
+    const raw = `<&>"'`;
+    const out = escapeHtml(raw);
+    const expected = '&amp;&lt;&gt;&quot;&#39;';
+    if(out === expected){
+      log('TEST: escapeHtml', 'PASS');
+    } else {
+      log('TEST: escapeHtml', `FAIL (got ${out} expected ${expected})`);
+    }
+
+    // Test 3: badge update mechanics (no DOM errors and values set)
+    try {
+      setBadge('pcState','testing','warn');
+      setBadge('iceState','testing','ok');
+      setBadge('dcState','testing','err');
+      const ok = $('#pcVal').textContent==='testing' && $('#iceVal').textContent==='testing' && $('#dcVal').textContent==='testing';
+      log('TEST: badges', ok? 'PASS' : 'FAIL (content mismatch)');
+    } catch(e){
+      log('TEST: badges', `FAIL (${e?.message||e})`);
+    }
+
+    log('diagnostics', 'done.');
+  }
+
+  $('#runTests').addEventListener('click', runDiagnostics);
+
+  // Initialize
+  newPC();
+  </script>
+</body>
+</html>
